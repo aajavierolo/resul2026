@@ -2,6 +2,8 @@ import io
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="ICFES · Comparativo por curso", page_icon="📊", layout="wide")
 
@@ -32,16 +34,16 @@ def load_data(file_bytes):
 st.title("Resultados ICFES · Comparativo por curso")
 st.caption("Analice cursos por separado o en conjunto. Los indicadores y gráficos se actualizan al cambiar los filtros.")
 
-DEFAULT_FILE = Path(__file__).parent / "Puntajes ICFES 2026 (1) con cursos.xls"
-if not DEFAULT_FILE.exists():
+# El Excel está versionado en la raíz del repositorio de GitHub, junto a esta app.
+EXCEL_PATH = Path(__file__).resolve().parent / "Puntajes ICFES 2026 (1) con cursos.xls"
+if not EXCEL_PATH.exists():
     st.error(
-        "No se encontró el Excel. Confirme que 'Puntajes ICFES 2026 (1) con cursos.xls' "
-        "esté en la raíz del repositorio, junto al archivo de la app."
+        "No se encontró 'Puntajes ICFES 2026 (1) con cursos.xls'. "
+        "Verifique que el Excel esté en la misma carpeta de GitHub que esta app."
     )
     st.stop()
 try:
-    file_bytes = DEFAULT_FILE.read_bytes()
-    df = load_data(file_bytes)
+    df = load_data(EXCEL_PATH.read_bytes())
 except Exception as e:
     st.error(f"No se pudo leer el Excel del repositorio: {e}")
     st.stop()
@@ -69,43 +71,52 @@ summary = f.groupby("Curso").agg(
     **{"Promedio global": ("Puntaje global", "mean"), "Mediana global": ("Puntaje global", "median"), "Máximo global": ("Puntaje global", "max"), "Mínimo global": ("Puntaje global", "min")}
 ).reset_index()
 
-tab_global, tab_areas = st.tabs(["Puntaje global", "Resultados por áreas"])
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Cursos seleccionados", len(selected))
+k2.metric("Estudiantes incluidos", len(f))
+k3.metric("Promedio global del filtro", f["Puntaje global"].mean().round(1))
+k4.metric("Curso con mayor promedio", str(summary.loc[summary["Promedio global"].idxmax(), "Curso"]))
 
-with tab_global:
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Cursos seleccionados", len(selected))
-    k2.metric("Estudiantes incluidos", len(f))
-    k3.metric("Promedio global del filtro", f["Puntaje global"].mean().round(1))
-    k4.metric("Curso con mayor promedio", str(summary.loc[summary["Promedio global"].idxmax(), "Curso"]))
+st.subheader("1. Comparativo de puntaje global")
+left, right = st.columns([1.2, 1])
+with left:
+    fig = px.bar(summary, x="Curso", y="Promedio global", color="Curso", text_auto=".1f", hover_data=["Estudiantes", "Mediana global", "Máximo global", "Mínimo global"], title="Promedio global por curso")
+    fig.update_layout(showlegend=False, yaxis_title="Puntaje", xaxis_title="Curso")
+    st.plotly_chart(fig, use_container_width=True)
+with right:
+    fig = px.box(f, x="Curso", y="Puntaje global", color="Curso", points="all", title="Distribución de puntajes globales")
+    fig.update_layout(showlegend=False, yaxis_title="Puntaje global", xaxis_title="Curso")
+    st.plotly_chart(fig, use_container_width=True)
 
-    left, right = st.columns([1.2, 1])
-    with left:
-        st.bar_chart(summary.set_index("Curso")[["Promedio global"]], y_label="Puntaje", x_label="Curso")
-    with right:
-        st.subheader("Distribución de puntajes globales")
-        st.line_chart(f.pivot(columns="Curso", values="Puntaje global"), y_label="Puntaje global")
+st.subheader("2. Desempeño promedio por área")
+if metrics:
+    area_long = f.melt(id_vars="Curso", value_vars=metrics, var_name="Área", value_name="Puntaje")
+    area_summary = area_long.groupby(["Curso", "Área"], as_index=False)["Puntaje"].mean()
+    fig = px.bar(area_summary, x="Área", y="Puntaje", color="Curso", barmode="group", text_auto=".1f", title="Promedio por área y curso")
+    fig.update_layout(yaxis_title="Puntaje promedio", xaxis_title="Área")
+    st.plotly_chart(fig, use_container_width=True)
+    radar = area_summary.pivot(index="Área", columns="Curso", values="Puntaje").reset_index()
+    rfig = go.Figure()
+    for course in selected:
+        if course in radar.columns:
+            vals = radar[course].tolist()
+            rfig.add_trace(go.Scatterpolar(r=vals + vals[:1], theta=radar["Área"].tolist() + radar["Área"].tolist()[:1], fill="toself", name=course))
+    rfig.update_layout(title="Perfil comparativo por áreas", polar=dict(radialaxis=dict(visible=True)), height=500)
+    st.plotly_chart(rfig, use_container_width=True)
+else:
+    st.info("Seleccione una o más áreas en el panel lateral.")
 
-    st.subheader("Resumen por curso")
-    st.dataframe(summary.style.format({"Promedio global":"{:.1f}","Mediana global":"{:.1f}"}), use_container_width=True, hide_index=True)
-    csv = summary.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("Descargar resumen global (CSV)", csv, "resumen_icfes_global_por_curso.csv", "text/csv")
+st.subheader("3. Tabla resumen")
+st.dataframe(summary.style.format({"Promedio global":"{:.1f}","Mediana global":"{:.1f}"}), use_container_width=True, hide_index=True)
 
-with tab_areas:
-    if metrics:
-        area_long = f.melt(id_vars="Curso", value_vars=metrics, var_name="Área", value_name="Puntaje")
-        area_summary = area_long.groupby(["Curso", "Área"], as_index=False)["Puntaje"].mean()
-        st.subheader("Promedio por área y curso")
-        area_chart = area_summary.pivot(index="Área", columns="Curso", values="Puntaje")
-        st.bar_chart(area_chart, y_label="Puntaje promedio", x_label="Área")
-        st.subheader("Detalle por estudiante")
-        if show_students:
-            st.caption("Esta tabla contiene datos identificables. Compártala únicamente con personas autorizadas.")
-            cols = ["Curso", "Registro", "Estudiante"] + metrics + ["Puntaje global"]
-            st.dataframe(f[cols].sort_values(["Curso", "Puntaje global"], ascending=[True, False]), use_container_width=True, hide_index=True)
-            st.download_button("Descargar detalle filtrado (CSV)", f[cols].to_csv(index=False).encode("utf-8-sig"), "detalle_icfes_filtrado.csv", "text/csv")
-        else:
-            st.info("Para ver nombres y resultados individuales, active ‘Mostrar detalle nominal de estudiantes’ en el panel lateral.")
-    else:
-        st.info("Seleccione una o más áreas en el panel lateral.")
+csv = summary.to_csv(index=False).encode("utf-8-sig")
+st.download_button("Descargar resumen de cursos (CSV)", csv, "resumen_icfes_por_curso.csv", "text/csv")
+
+if show_students:
+    st.subheader("Detalle por estudiante")
+    st.caption("Esta tabla contiene datos identificables. Compártala únicamente con personas autorizadas.")
+    cols = ["Curso", "Registro", "Estudiante"] + metrics + ["Puntaje global"]
+    st.dataframe(f[cols].sort_values(["Curso", "Puntaje global"], ascending=[True, False]), use_container_width=True, hide_index=True)
+    st.download_button("Descargar detalle filtrado (CSV)", f[cols].to_csv(index=False).encode("utf-8-sig"), "detalle_icfes_filtrado.csv", "text/csv")
 
 st.caption("Nota: los promedios se calculan solo con estudiantes que tienen puntaje global y cumplen el rango seleccionado. Los puntajes por área se promedian sobre los valores disponibles.")
